@@ -1,10 +1,16 @@
 import os
+import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from pedalboard import Pedalboard, Reverb
 from pedalboard.io import AudioFile
 import tempfile
 from werkzeug.utils import secure_filename
+import traceback
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -14,6 +20,7 @@ TEMP_DIR = tempfile.gettempdir()
 
 # Configuration
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for processing
 
 # Speed and reverb presets from the original implementation
@@ -25,61 +32,87 @@ def allowed_file(filename):
 
 def process_audio(input_path, output_path, room_size=0.25, sample_rate=40000):
     try:
+        logger.info(f"Starting audio processing: input={input_path}, output={output_path}")
+        logger.info(f"Parameters: room_size={room_size}, sample_rate={sample_rate}")
+
         # Process audio in chunks to reduce memory usage
         with AudioFile(input_path, 'r') as f:
             duration = f.frames / f.samplerate
+            logger.info(f"Audio duration: {duration} seconds")
+            
             if duration > 600:  # 10 minutes max
                 raise ValueError("Audio file too long. Maximum duration is 10 minutes.")
             
             # Read the audio in chunks
             audio = f.read(f.frames)
             original_sample_rate = f.samplerate
-        
+            logger.info(f"Original sample rate: {original_sample_rate}")
+
         # Create and apply effects
         try:
+            logger.info("Applying audio effects...")
             board = Pedalboard([Reverb(room_size=room_size)])
             effected = board(audio, original_sample_rate)
             
             # Write the processed audio
+            logger.info("Writing processed audio...")
             with AudioFile(output_path, 'w', sample_rate, effected.shape[0]) as out:
                 out.write(effected)
+            
+            logger.info("Audio processing completed successfully")
+            
         except Exception as e:
+            logger.error(f"Error during audio processing: {str(e)}")
+            logger.error(traceback.format_exc())
             raise RuntimeError(f"Error processing audio: {str(e)}")
             
     except Exception as e:
-        print(f"Error processing audio: {str(e)}")
+        logger.error(f"Error in process_audio: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
 
 @app.route('/process', methods=['POST'])
 def process_song():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'Only WAV files are supported'}), 400
-    
     try:
+        logger.info("Received process request")
+        
+        if 'file' not in request.files:
+            logger.warning("No file provided in request")
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            logger.warning("No file selected")
+            return jsonify({'error': 'No file selected'}), 400
+        
+        if not allowed_file(file.filename):
+            logger.warning(f"Invalid file type: {file.filename}")
+            return jsonify({'error': 'Only WAV files are supported'}), 400
+        
         # Check file size before processing
         file.seek(0, os.SEEK_END)
         size = file.tell()
         file.seek(0)
         
+        logger.info(f"File size: {size} bytes")
+        
         if size > app.config['MAX_CONTENT_LENGTH']:
+            logger.warning(f"File too large: {size} bytes")
             return jsonify({'error': 'File too large. Maximum size is 50MB'}), 413
         
         # Get parameters
         speed_index = int(request.form.get('speed', 2))  # Default to 40000
         reverb_index = int(request.form.get('reverb', 2))  # Default to 0.25
         
+        logger.info(f"Processing parameters: speed_index={speed_index}, reverb_index={reverb_index}")
+        
         if speed_index < 0 or speed_index >= len(SPEED_AMOUNTS):
+            logger.warning(f"Invalid speed value: {speed_index}")
             return jsonify({'error': 'Invalid speed value'}), 400
         
         if reverb_index < 0 or reverb_index >= len(REVERB_AMOUNTS):
+            logger.warning(f"Invalid reverb value: {reverb_index}")
             return jsonify({'error': 'Invalid reverb value'}), 400
         
         speed = SPEED_AMOUNTS[speed_index]
@@ -90,31 +123,41 @@ def process_song():
         output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
         
         try:
+            logger.info("Saving uploaded file...")
             # Save uploaded file
             file.save(input_file.name)
             
+            logger.info("Processing audio...")
             # Process the audio
             process_audio(input_file.name, output_file.name, room_size, speed)
             
+            logger.info("Sending processed file...")
             # Send the processed file
             return send_file(
                 output_file.name,
                 as_attachment=True,
-                download_name=f"slowreverb_{os.path.splitext(file.filename)[0]}.wav"
+                download_name=f"slowreverb_{os.path.splitext(file.filename)[0]}.wav",
+                max_age=0
             )
+            
         except ValueError as ve:
+            logger.error(f"Validation error: {str(ve)}")
             return jsonify({'error': str(ve)}), 400
         except RuntimeError as re:
+            logger.error(f"Runtime error: {str(re)}")
             return jsonify({'error': str(re)}), 500
         finally:
             # Clean up temporary files
             try:
+                logger.info("Cleaning up temporary files...")
                 os.unlink(input_file.name)
                 os.unlink(output_file.name)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Error cleaning up files: {str(e)}")
                 
     except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
 
 @app.route('/')
