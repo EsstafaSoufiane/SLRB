@@ -81,6 +81,7 @@ def process_song():
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
+        logger.info(f"Received file: {file.filename}")
         
         if file.filename == '':
             logger.warning("No file selected")
@@ -90,22 +91,14 @@ def process_song():
             logger.warning(f"Invalid file type: {file.filename}")
             return jsonify({'error': 'Only WAV files are supported'}), 400
         
-        # Check file size before processing
-        file.seek(0, os.SEEK_END)
-        size = file.tell()
-        file.seek(0)
-        
-        logger.info(f"File size: {size} bytes")
-        
-        if size > app.config['MAX_CONTENT_LENGTH']:
-            logger.warning(f"File too large: {size} bytes")
-            return jsonify({'error': 'File too large. Maximum size is 50MB'}), 413
-        
-        # Get parameters
-        speed_index = int(request.form.get('speed', 2))  # Default to 40000
-        reverb_index = int(request.form.get('reverb', 2))  # Default to 0.25
-        
-        logger.info(f"Processing parameters: speed_index={speed_index}, reverb_index={reverb_index}")
+        # Get parameters first to validate them
+        try:
+            speed_index = int(request.form.get('speed', 2))  # Default to 40000
+            reverb_index = int(request.form.get('reverb', 2))  # Default to 0.25
+            logger.info(f"Processing parameters: speed_index={speed_index}, reverb_index={reverb_index}")
+        except ValueError as ve:
+            logger.error(f"Invalid parameter values: {str(ve)}")
+            return jsonify({'error': 'Invalid speed or reverb values'}), 400
         
         if speed_index < 0 or speed_index >= len(SPEED_AMOUNTS):
             logger.warning(f"Invalid speed value: {speed_index}")
@@ -118,23 +111,40 @@ def process_song():
         speed = SPEED_AMOUNTS[speed_index]
         room_size = REVERB_AMOUNTS[reverb_index]
         
+        # Check file size before processing
+        try:
+            file.seek(0, os.SEEK_END)
+            size = file.tell()
+            file.seek(0)
+            logger.info(f"File size: {size} bytes")
+            
+            if size > app.config['MAX_CONTENT_LENGTH']:
+                logger.warning(f"File too large: {size} bytes")
+                return jsonify({'error': 'File too large. Maximum size is 50MB'}), 413
+        except Exception as e:
+            logger.error(f"Error checking file size: {str(e)}")
+            return jsonify({'error': 'Error checking file size'}), 500
+        
         # Create temporary files with unique names
-        input_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
-        output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
+        try:
+            input_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
+            output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
+            logger.info(f"Created temporary files: input={input_file.name}, output={output_file.name}")
+        except Exception as e:
+            logger.error(f"Error creating temporary files: {str(e)}")
+            return jsonify({'error': 'Error creating temporary files'}), 500
         
         try:
             logger.info("Saving uploaded file...")
-            # Save uploaded file
             file.save(input_file.name)
             
             logger.info("Processing audio...")
-            # Process the audio
             process_audio(input_file.name, output_file.name, room_size, speed)
             
             logger.info("Sending processed file...")
-            # Send the processed file
             return send_file(
                 output_file.name,
+                mimetype='audio/wav',
                 as_attachment=True,
                 download_name=f"slowreverb_{os.path.splitext(file.filename)[0]}.wav",
                 max_age=0
@@ -143,22 +153,25 @@ def process_song():
         except ValueError as ve:
             logger.error(f"Validation error: {str(ve)}")
             return jsonify({'error': str(ve)}), 400
-        except RuntimeError as re:
-            logger.error(f"Runtime error: {str(re)}")
-            return jsonify({'error': str(re)}), 500
+        except Exception as e:
+            logger.error(f"Error processing audio: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f"Error processing audio: {str(e)}"}), 500
         finally:
             # Clean up temporary files
             try:
                 logger.info("Cleaning up temporary files...")
-                os.unlink(input_file.name)
-                os.unlink(output_file.name)
+                if os.path.exists(input_file.name):
+                    os.unlink(input_file.name)
+                if os.path.exists(output_file.name):
+                    os.unlink(output_file.name)
             except Exception as e:
                 logger.error(f"Error cleaning up files: {str(e)}")
                 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
+        return jsonify({'error': f"Server error: {str(e)}"}), 500
 
 @app.route('/')
 def index():
@@ -327,4 +340,20 @@ def index():
     ''', 200, {'Content-Type': 'text/html'}
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    # Increase timeout and other settings for handling large files
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.protocol_version = "HTTP/1.1"
+    
+    # Configure app for production
+    app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+    app.config['UPLOAD_FOLDER'] = TEMP_DIR
+    
+    # Set higher timeouts
+    from werkzeug.serving import run_simple
+    run_simple('0.0.0.0', 
+               int(os.environ.get('PORT', 5000)), 
+               app,
+               threaded=True,
+               processes=1,
+               request_handler=WSGIRequestHandler)
