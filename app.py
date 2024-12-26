@@ -7,6 +7,7 @@ from pedalboard.io import AudioFile
 import tempfile
 from werkzeug.utils import secure_filename
 import traceback
+from pydub import AudioSegment
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,21 +22,30 @@ TEMP_DIR = tempfile.gettempdir()
 # Configuration
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-CHUNK_SIZE = 1024 * 1024  # 1MB chunks for processing
 
-# Speed and reverb presets from the original implementation
+# Speed and reverb presets
 SPEED_AMOUNTS = [38000, 39000, 40000, 41000, 42000, 43000, 44000, 45000, 46000, 47000]
 REVERB_AMOUNTS = [0.0, 0.10, 0.25, 0.5]
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'wav'}
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'wav', 'mp3'}
+
+def convert_to_wav(input_path, output_path):
+    """Convert MP3 to WAV format"""
+    try:
+        logger.info(f"Converting {input_path} to WAV format")
+        audio = AudioSegment.from_mp3(input_path)
+        audio.export(output_path, format='wav')
+        logger.info("Conversion successful")
+    except Exception as e:
+        logger.error(f"Error converting MP3 to WAV: {str(e)}")
+        raise RuntimeError(f"Error converting audio file: {str(e)}")
 
 def process_audio(input_path, output_path, room_size=0.25, sample_rate=40000):
     try:
         logger.info(f"Starting audio processing: input={input_path}, output={output_path}")
         logger.info(f"Parameters: room_size={room_size}, sample_rate={sample_rate}")
 
-        # Process audio in chunks to reduce memory usage
         with AudioFile(input_path, 'r') as f:
             duration = f.frames / f.samplerate
             logger.info(f"Audio duration: {duration} seconds")
@@ -43,18 +53,15 @@ def process_audio(input_path, output_path, room_size=0.25, sample_rate=40000):
             if duration > 600:  # 10 minutes max
                 raise ValueError("Audio file too long. Maximum duration is 10 minutes.")
             
-            # Read the audio in chunks
             audio = f.read(f.frames)
             original_sample_rate = f.samplerate
             logger.info(f"Original sample rate: {original_sample_rate}")
 
-        # Create and apply effects
         try:
             logger.info("Applying audio effects...")
             board = Pedalboard([Reverb(room_size=room_size)])
             effected = board(audio, original_sample_rate)
             
-            # Write the processed audio
             logger.info("Writing processed audio...")
             with AudioFile(output_path, 'w', sample_rate, effected.shape[0]) as out:
                 out.write(effected)
@@ -89,12 +96,12 @@ def process_song():
         
         if not allowed_file(file.filename):
             logger.warning(f"Invalid file type: {file.filename}")
-            return jsonify({'error': 'Only WAV files are supported'}), 400
+            return jsonify({'error': 'Only WAV and MP3 files are supported'}), 400
         
         # Get parameters first to validate them
         try:
-            speed_index = int(request.form.get('speed', 2))  # Default to 40000
-            reverb_index = int(request.form.get('reverb', 2))  # Default to 0.25
+            speed_index = int(request.form.get('speed', 2))
+            reverb_index = int(request.form.get('reverb', 2))
             logger.info(f"Processing parameters: speed_index={speed_index}, reverb_index={reverb_index}")
         except ValueError as ve:
             logger.error(f"Invalid parameter values: {str(ve)}")
@@ -111,7 +118,7 @@ def process_song():
         speed = SPEED_AMOUNTS[speed_index]
         room_size = REVERB_AMOUNTS[reverb_index]
         
-        # Check file size before processing
+        # Check file size
         try:
             file.seek(0, os.SEEK_END)
             size = file.tell()
@@ -124,8 +131,8 @@ def process_song():
         except Exception as e:
             logger.error(f"Error checking file size: {str(e)}")
             return jsonify({'error': 'Error checking file size'}), 500
-        
-        # Create temporary files with unique names
+
+        # Create temporary files
         try:
             input_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
             output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
@@ -133,10 +140,18 @@ def process_song():
         except Exception as e:
             logger.error(f"Error creating temporary files: {str(e)}")
             return jsonify({'error': 'Error creating temporary files'}), 500
-        
+
         try:
             logger.info("Saving uploaded file...")
-            file.save(input_file.name)
+            if file.filename.lower().endswith('.mp3'):
+                # For MP3 files, save to temp file and convert to WAV
+                temp_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3', dir=TEMP_DIR)
+                file.save(temp_mp3.name)
+                convert_to_wav(temp_mp3.name, input_file.name)
+                os.unlink(temp_mp3.name)
+            else:
+                # For WAV files, save directly
+                file.save(input_file.name)
             
             logger.info("Processing audio...")
             process_audio(input_file.name, output_file.name, room_size, speed)
@@ -231,7 +246,7 @@ def index():
     <body>
         <h1>Slow and Reverbifier</h1>
         <div class="container">
-            <input type="file" id="audioFile" accept=".wav">
+            <input type="file" id="audioFile" accept=".wav, .mp3">
             <div class="info">Maximum file size: 50MB, Maximum duration: 10 minutes</div>
             <br><br>
             <label for="speed">Speed:</label><br>
