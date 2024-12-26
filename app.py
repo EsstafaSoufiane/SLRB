@@ -88,7 +88,8 @@ def process_song():
 
 @app.route('/')
 def index():
-    return '''
+    return send_file('templates/index.html') if os.path.exists('templates/index.html') else jsonify({
+        'html': '''
     <!DOCTYPE html>
     <html>
     <head>
@@ -182,6 +183,7 @@ def index():
     </body>
     </html>
     '''
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

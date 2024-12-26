@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Slow and Reverbifier</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .container {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .slider {
+            width: 80%;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Slow and Reverbifier</h1>
+    <div class="container">
+        <input type="file" id="audioFile" accept=".wav">
+        <br><br>
+        <label for="speed">Speed:</label><br>
+        <input type="range" id="speed" class="slider" min="0" max="9" value="2">
+        <div id="speedValue">38000Hz - 47000Hz</div>
+        <br>
+        <label for="reverb">Reverb:</label><br>
+        <input type="range" id="reverb" class="slider" min="0" max="3" value="2">
+        <div id="reverbValue">0.0 - 0.5</div>
+        <br>
+        <button onclick="processAudio()">Process Audio</button>
+    </div>
+    <script>
+        function processAudio() {
+            const fileInput = document.getElementById('audioFile');
+            const speedInput = document.getElementById('speed');
+            const reverbInput = document.getElementById('reverb');
+            
+            if (!fileInput.files.length) {
+                alert('Please select a file');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('speed', speedInput.value);
+            formData.append('reverb', reverbInput.value);
+            
+            fetch('/process', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => { throw new Error(err.error) });
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'processed_audio.wav';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
+            })
+            .catch(error => {
+                alert('Error: ' + error.message);
+            });
+        }
+    </script>
+</body>
+</html>
