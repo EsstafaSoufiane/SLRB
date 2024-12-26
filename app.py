@@ -254,7 +254,7 @@ def index():
                 loading.style.display = isLoading ? 'block' : 'none';
             }
 
-            function processAudio() {
+            async function processAudio() {
                 const fileInput = document.getElementById('audioFile');
                 const speedInput = document.getElementById('speed');
                 const reverbInput = document.getElementById('reverb');
@@ -279,17 +279,23 @@ def index():
                 
                 setLoading(true);
                 
-                fetch('/process', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => {
+                try {
+                    const response = await fetch('/process', {
+                        method: 'POST',
+                        body: formData
+                    });
+
                     if (!response.ok) {
-                        return response.json().then(err => { throw new Error(err.error) });
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.error || 'Server error occurred');
+                        } else {
+                            throw new Error('Server error occurred. Please try again.');
+                        }
                     }
-                    return response.blob();
-                })
-                .then(blob => {
+
+                    const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
@@ -298,13 +304,11 @@ def index():
                     a.click();
                     window.URL.revokeObjectURL(url);
                     a.remove();
-                })
-                .catch(error => {
-                    showError('Error: ' + error.message);
-                })
-                .finally(() => {
+                } catch (error) {
+                    showError(error.message);
+                } finally {
                     setLoading(false);
-                });
+                }
             }
 
             // Update speed and reverb values display
