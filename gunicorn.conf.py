@@ -1,4 +1,5 @@
 import multiprocessing
+import os
 
 # Worker settings
 workers = 1  # Single worker to handle requests
@@ -28,7 +29,7 @@ keyfile = None
 certfile = None
 
 # Server socket
-bind = "0.0.0.0:$PORT"
+bind = f"0.0.0.0:{os.environ.get('PORT', '5000')}"
 backlog = 2048
 
 # Process naming

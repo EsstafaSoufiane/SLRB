@@ -1,1 +1,1 @@
-web: gunicorn app:app --config gunicorn.conf.py --timeout 300 --workers 1 --threads 4
+web: gunicorn --workers=1 --threads=4 --timeout=300 app:app

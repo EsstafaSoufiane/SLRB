@@ -340,20 +340,10 @@ def index():
     ''', 200, {'Content-Type': 'text/html'}
 
 if __name__ == '__main__':
-    # Increase timeout and other settings for handling large files
-    from werkzeug.serving import WSGIRequestHandler
-    WSGIRequestHandler.protocol_version = "HTTP/1.1"
-    
     # Configure app for production
     app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-    app.config['UPLOAD_FOLDER'] = TEMP_DIR
     
-    # Set higher timeouts
-    from werkzeug.serving import run_simple
-    run_simple('0.0.0.0', 
-               int(os.environ.get('PORT', 5000)), 
-               app,
-               threaded=True,
-               processes=1,
-               request_handler=WSGIRequestHandler)
+    # Run the app
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
