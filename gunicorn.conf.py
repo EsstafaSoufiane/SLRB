@@ -37,7 +37,7 @@ proc_name = None
 
 # Default SSL options
 ssl_version = None
-cert_reqs = None
+cert_reqs = 0  # Changed from None to 0
 ca_certs = None
 suppress_ragged_eofs = True
 do_handshake_on_connect = False
