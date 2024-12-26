@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+*.wav
+processed/
+processed_audio/
+temp/
+temp_uploads/
+uploads/
