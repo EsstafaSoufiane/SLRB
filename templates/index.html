@@ -30,12 +30,31 @@
         button:hover {
             background-color: #45a049;
         }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .error {
+            color: #ff0000;
+            margin: 10px 0;
+            display: none;
+        }
+        .loading {
+            display: none;
+            margin: 10px 0;
+        }
+        .info {
+            color: #666;
+            font-size: 0.9em;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
     <h1>Slow and Reverbifier</h1>
     <div class="container">
         <input type="file" id="audioFile" accept=".wav">
+        <div class="info">Maximum file size: 50MB, Maximum duration: 10 minutes</div>
         <br><br>
         <label for="speed">Speed:</label><br>
         <input type="range" id="speed" class="slider" min="0" max="9" value="2">
@@ -45,23 +64,52 @@
         <input type="range" id="reverb" class="slider" min="0" max="3" value="2">
         <div id="reverbValue">0.0 - 0.5</div>
         <br>
-        <button onclick="processAudio()">Process Audio</button>
+        <button id="processButton" onclick="processAudio()">Process Audio</button>
+        <div id="loading" class="loading">Processing... Please wait...</div>
+        <div id="error" class="error"></div>
     </div>
     <script>
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function setLoading(isLoading) {
+            const button = document.getElementById('processButton');
+            const loading = document.getElementById('loading');
+            button.disabled = isLoading;
+            loading.style.display = isLoading ? 'block' : 'none';
+        }
+
         function processAudio() {
             const fileInput = document.getElementById('audioFile');
             const speedInput = document.getElementById('speed');
             const reverbInput = document.getElementById('reverb');
             
+            hideError();
+            
             if (!fileInput.files.length) {
-                alert('Please select a file');
+                showError('Please select a file');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            if (file.size > 50 * 1024 * 1024) {
+                showError('File too large. Maximum size is 50MB');
                 return;
             }
             
             const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
+            formData.append('file', file);
             formData.append('speed', speedInput.value);
             formData.append('reverb', reverbInput.value);
+            
+            setLoading(true);
             
             fetch('/process', {
                 method: 'POST',
@@ -84,9 +132,26 @@
                 a.remove();
             })
             .catch(error => {
-                alert('Error: ' + error.message);
+                showError('Error: ' + error.message);
+            })
+            .finally(() => {
+                setLoading(false);
             });
         }
+
+        // Update speed and reverb values display
+        document.getElementById('speed').addEventListener('input', function(e) {
+            const speed = SPEED_AMOUNTS[e.target.value];
+            document.getElementById('speedValue').textContent = speed + 'Hz';
+        });
+
+        document.getElementById('reverb').addEventListener('input', function(e) {
+            const reverb = REVERB_AMOUNTS[e.target.value];
+            document.getElementById('reverbValue').textContent = reverb.toFixed(2);
+        });
+
+        const SPEED_AMOUNTS = [38000, 39000, 40000, 41000, 42000, 43000, 44000, 45000, 46000, 47000];
+        const REVERB_AMOUNTS = [0.0, 0.10, 0.25, 0.5];
     </script>
 </body>
 </html>

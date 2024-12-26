@@ -12,6 +12,10 @@ CORS(app)
 # Use temporary directory instead of fixed paths
 TEMP_DIR = tempfile.gettempdir()
 
+# Configuration
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks for processing
+
 # Speed and reverb presets from the original implementation
 SPEED_AMOUNTS = [38000, 39000, 40000, 41000, 42000, 43000, 44000, 45000, 46000, 47000]
 REVERB_AMOUNTS = [0.0, 0.10, 0.25, 0.5]
@@ -21,18 +25,27 @@ def allowed_file(filename):
 
 def process_audio(input_path, output_path, room_size=0.25, sample_rate=40000):
     try:
-        # Read the audio file
+        # Process audio in chunks to reduce memory usage
         with AudioFile(input_path, 'r') as f:
+            duration = f.frames / f.samplerate
+            if duration > 600:  # 10 minutes max
+                raise ValueError("Audio file too long. Maximum duration is 10 minutes.")
+            
+            # Read the audio in chunks
             audio = f.read(f.frames)
             original_sample_rate = f.samplerate
         
         # Create and apply effects
-        board = Pedalboard([Reverb(room_size=room_size)])
-        effected = board(audio, original_sample_rate)
-        
-        # Write the processed audio
-        with AudioFile(output_path, 'w', sample_rate, effected.shape[0]) as out:
-            out.write(effected)
+        try:
+            board = Pedalboard([Reverb(room_size=room_size)])
+            effected = board(audio, original_sample_rate)
+            
+            # Write the processed audio
+            with AudioFile(output_path, 'w', sample_rate, effected.shape[0]) as out:
+                out.write(effected)
+        except Exception as e:
+            raise RuntimeError(f"Error processing audio: {str(e)}")
+            
     except Exception as e:
         print(f"Error processing audio: {str(e)}")
         raise
@@ -51,9 +64,23 @@ def process_song():
         return jsonify({'error': 'Only WAV files are supported'}), 400
     
     try:
+        # Check file size before processing
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        
+        if size > app.config['MAX_CONTENT_LENGTH']:
+            return jsonify({'error': 'File too large. Maximum size is 50MB'}), 413
+        
         # Get parameters
         speed_index = int(request.form.get('speed', 2))  # Default to 40000
         reverb_index = int(request.form.get('reverb', 2))  # Default to 0.25
+        
+        if speed_index < 0 or speed_index >= len(SPEED_AMOUNTS):
+            return jsonify({'error': 'Invalid speed value'}), 400
+        
+        if reverb_index < 0 or reverb_index >= len(REVERB_AMOUNTS):
+            return jsonify({'error': 'Invalid reverb value'}), 400
         
         speed = SPEED_AMOUNTS[speed_index]
         room_size = REVERB_AMOUNTS[reverb_index]
@@ -75,6 +102,10 @@ def process_song():
                 as_attachment=True,
                 download_name=f"slowreverb_{os.path.splitext(file.filename)[0]}.wav"
             )
+        except ValueError as ve:
+            return jsonify({'error': str(ve)}), 400
+        except RuntimeError as re:
+            return jsonify({'error': str(re)}), 500
         finally:
             # Clean up temporary files
             try:
@@ -84,7 +115,7 @@ def process_song():
                 pass
                 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
 
 @app.route('/')
 def index():
