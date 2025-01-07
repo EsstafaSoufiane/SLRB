@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-from pedalboard import Pedalboard, Reverb
+from pedalboard import Pedalboard, Reverb, Gain
 from pedalboard.io import AudioFile
 import tempfile
 from werkzeug.utils import secure_filename
@@ -17,10 +17,21 @@ app = Flask(__name__)
 CORS(app)
 
 # Use temporary directory instead of fixed paths
-TEMP_DIR = tempfile.gettempdir()
+try:
+    # Try to use a custom temp directory in a local path
+    TEMP_DIR = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'SLRVB', 'temp')
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+    logger.info(f"Created custom temp directory: {TEMP_DIR}")
+except Exception as e:
+    # Fall back to system temp directory if custom directory fails
+    logger.warning(f"Failed to create custom temp directory, using system temp: {str(e)}")
+    TEMP_DIR = tempfile.gettempdir()
+
+logger.info(f"Using temporary directory: {TEMP_DIR}")
 
 # Configuration
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 # Speed and reverb presets
@@ -43,28 +54,74 @@ def convert_to_wav(input_path, output_path):
 
 def process_audio(input_path, output_path, room_size=0.25, sample_rate=40000):
     try:
+        # Convert to absolute paths
+        input_path = os.path.abspath(input_path)
+        output_path = os.path.abspath(output_path)
+        
         logger.info(f"Starting audio processing: input={input_path}, output={output_path}")
         logger.info(f"Parameters: room_size={room_size}, sample_rate={sample_rate}")
 
+        # Verify input file exists and is readable
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+        
+        # Verify output directory exists and is writable
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # Test if we can write to output directory
+        test_file = os.path.join(output_dir, 'test_write.tmp')
+        try:
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            logger.info(f"Successfully verified write access to {output_dir}")
+        except Exception as e:
+            raise PermissionError(f"Cannot write to output directory {output_dir}: {str(e)}")
+
+        logger.info("Opening input file for reading...")
         with AudioFile(input_path, 'r') as f:
             duration = f.frames / f.samplerate
             logger.info(f"Audio duration: {duration} seconds")
             
-            if duration > 600:  # 10 minutes max
-                raise ValueError("Audio file too long. Maximum duration is 10 minutes.")
+            if duration > 720:  # 12 minutes max
+                raise ValueError("Audio file too long. Maximum duration is 12 minutes.")
             
             audio = f.read(f.frames)
             original_sample_rate = f.samplerate
             logger.info(f"Original sample rate: {original_sample_rate}")
 
         try:
-            logger.info("Applying audio effects...")
-            board = Pedalboard([Reverb(room_size=room_size)])
+            logger.info("Applying dreamy reverb effect...")
+            board = Pedalboard([
+                Reverb(
+                    room_size=0.35,      # Larger room for dreaminess
+                    damping=0.5,         # Smooth high frequencies
+                    wet_level=0.45,      # Good amount of reverb
+                    dry_level=0.6,       # Keep original sound clear
+                    width=1.0            # Full stereo width
+                ),
+                Gain(                    # Add volume boost
+                    gain_db=4.0
+                )
+            ])
             effected = board(audio, original_sample_rate)
             
-            logger.info("Writing processed audio...")
+            logger.info(f"Writing processed audio to {output_path}...")
+            logger.info(f"Audio shape: {effected.shape}, Sample rate: {sample_rate}")
+            
+            # Ensure the output directory exists right before writing
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with AudioFile(output_path, 'w', sample_rate, effected.shape[0]) as out:
                 out.write(effected)
+            
+            # Verify the output file was created successfully
+            if not os.path.exists(output_path):
+                raise RuntimeError(f"Output file was not created: {output_path}")
+            else:
+                logger.info(f"Successfully created output file: {output_path}")
             
             logger.info("Audio processing completed successfully")
             
@@ -127,38 +184,54 @@ def process_song():
             
             if size > app.config['MAX_CONTENT_LENGTH']:
                 logger.warning(f"File too large: {size} bytes")
-                return jsonify({'error': 'File too large. Maximum size is 50MB'}), 413
+                return jsonify({'error': 'File too large. Maximum size is 100MB'}), 413
         except Exception as e:
             logger.error(f"Error checking file size: {str(e)}")
             return jsonify({'error': 'Error checking file size'}), 500
 
-        # Create temporary files
+        # Create temporary files with explicit close and error handling
         try:
-            input_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
-            output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav', dir=TEMP_DIR)
-            logger.info(f"Created temporary files: input={input_file.name}, output={output_file.name}")
+            # Ensure temp directory exists
+            os.makedirs(TEMP_DIR, exist_ok=True)
+            
+            # Create input file
+            input_file = tempfile.NamedTemporaryFile(mode='w+b', delete=False, suffix='.wav', dir=TEMP_DIR)
+            input_file.close()  # Close immediately to avoid file handle issues
+            input_path = os.path.abspath(input_file.name)
+            
+            # Create output file
+            output_file = tempfile.NamedTemporaryFile(mode='w+b', delete=False, suffix='.wav', dir=TEMP_DIR)
+            output_file.close()  # Close immediately to avoid file handle issues
+            output_path = os.path.abspath(output_file.name)
+            
+            logger.info(f"Created temporary files: input={input_path}, output={output_path}")
+            logger.info(f"Temp directory contents: {os.listdir(TEMP_DIR)}")
         except Exception as e:
             logger.error(f"Error creating temporary files: {str(e)}")
-            return jsonify({'error': 'Error creating temporary files'}), 500
+            return jsonify({'error': f'Error creating temporary files: {str(e)}'}), 500
 
         try:
             logger.info("Saving uploaded file...")
             if file.filename.lower().endswith('.mp3'):
                 # For MP3 files, save to temp file and convert to WAV
-                temp_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3', dir=TEMP_DIR)
+                temp_mp3 = tempfile.NamedTemporaryFile(mode='w+b', delete=False, suffix='.mp3', dir=TEMP_DIR)
+                temp_mp3.close()  # Close immediately to avoid file handle issues
                 file.save(temp_mp3.name)
-                convert_to_wav(temp_mp3.name, input_file.name)
-                os.unlink(temp_mp3.name)
+                convert_to_wav(temp_mp3.name, input_path)
+                try:
+                    os.unlink(temp_mp3.name)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp MP3 file: {str(e)}")
             else:
                 # For WAV files, save directly
-                file.save(input_file.name)
+                file.save(input_path)
             
             logger.info("Processing audio...")
-            process_audio(input_file.name, output_file.name, room_size, speed)
+            process_audio(input_path, output_path, room_size, speed)
             
             logger.info("Sending processed file...")
             return send_file(
-                output_file.name,
+                output_path,
                 mimetype='audio/wav',
                 as_attachment=True,
                 download_name=f"slowreverb_{os.path.splitext(file.filename)[0]}.wav",
@@ -176,10 +249,10 @@ def process_song():
             # Clean up temporary files
             try:
                 logger.info("Cleaning up temporary files...")
-                if os.path.exists(input_file.name):
-                    os.unlink(input_file.name)
-                if os.path.exists(output_file.name):
-                    os.unlink(output_file.name)
+                if os.path.exists(input_path):
+                    os.unlink(input_path)
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
             except Exception as e:
                 logger.error(f"Error cleaning up files: {str(e)}")
                 
@@ -247,7 +320,7 @@ def index():
         <h1>Slow and Reverbifier</h1>
         <div class="container">
             <input type="file" id="audioFile" accept=".wav, .mp3">
-            <div class="info">Maximum file size: 50MB, Maximum duration: 10 minutes</div>
+            <div class="info">Maximum file size: 100MB, Maximum duration: 12 minutes</div>
             <br><br>
             <label for="speed">Speed:</label><br>
             <input type="range" id="speed" class="slider" min="0" max="9" value="2">
@@ -295,8 +368,8 @@ def index():
                 }
 
                 const file = fileInput.files[0];
-                if (file.size > 50 * 1024 * 1024) {
-                    showError('File too large. Maximum size is 50MB');
+                if (file.size > 100 * 1024 * 1024) {
+                    showError('File too large. Maximum size is 100MB');
                     return;
                 }
                 
@@ -356,7 +429,7 @@ def index():
 
 if __name__ == '__main__':
     # Configure app for production
-    app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
     
     # Run the app
